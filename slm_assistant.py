@@ -1,11 +1,8 @@
-# ============================================
-# SLM Assistant for Student UPI EDA Project
-# Model Used : Phi-3 Mini (Ollama)
-# ============================================
 
-import ollama
+import streamlit as st
+from google import genai
 
-# Function to generate AI financial advice
+
 def generate_financial_advice(
     allowance,
     spending,
@@ -14,12 +11,9 @@ def generate_financial_advice(
     cashback,
     impulse_score
 ):
-
-    # Prompt sent to the Small Language Model
     prompt = f"""
-You are an AI Financial Advisor for college students.
-
-Analyze the following student's financial details and respond in simple English.
+You are an AI financial advisor for college students.
+Use simple English and give practical budgeting advice.
 
 Student Details:
 - Monthly Allowance: ₹{allowance}
@@ -29,44 +23,35 @@ Student Details:
 - Cashback Influence: {cashback}
 - Impulse Buying Score: {impulse_score}/10
 
-Give the output in this format:
-
+Provide:
 1. Spending Summary
 2. Savings Analysis
 3. Financial Health Category (Excellent, Good, Average, Poor)
-4. Five Personalized Budget Recommendations
+4. Five personalized budget recommendations
 5. One motivational financial tip.
+
+Use only the supplied figures. Do not invent facts.
+Treat the financial health score as a project-defined indicator,
+not a validated financial assessment.
 """
 
-    # Send prompt to Phi-3 model
-    response = ollama.chat(
-        model="phi3",
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
-    )
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+        client = genai.Client(api_key=api_key)
 
-    # Return only AI-generated text
-    return response["message"]["content"]
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
 
+        if response.text:
+            return response.text
 
-# -------------------------------
-# Test the assistant
-# -------------------------------
-if __name__ == "__main__":
-    print("Program Started...")
+        return "The AI advisor returned an empty response. Please try again."
 
-    advice = generate_financial_advice(
-        allowance=10000,
-        spending=8200,
-        savings=900,
-        financial_score=38,
-        cashback="High",
-        impulse_score=8
-    )
-
-    print("\n===== AI Financial Report =====\n")
-    print(advice)
+    except Exception as e:
+        return (
+            "The AI financial advisor is temporarily unavailable. "
+            "Please check your Gemini API key and API access. "
+            f"Error: {e}"
+        )
