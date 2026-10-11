@@ -13,10 +13,15 @@ try:
 except ImportError:
     ollama = None
 
+try:
+    from google import genai
+except ImportError:
+    genai = None
+
 
 # ------------------------------------------------------------
 # UPI INSIGHT — Student Financial Intelligence
-# Streamlit + Pandas + Plotly + Ollama (Phi-3 Mini)
+# Streamlit + Pandas + Plotly + Ollama Phi-3 Mini + Gemini API
 # ------------------------------------------------------------
 st.set_page_config(
     page_title="UPI Insight | Student Financial Intelligence",
@@ -26,6 +31,7 @@ st.set_page_config(
 )
 
 MODEL_NAME = "phi3"
+GEMINI_MODEL = "gemini-flash-latest"
 CANDIDATE_FILES = [
     "UPI_Student_Spending_Dataset_1150_01.csv",
     "UPI_Student_Spending_Dataset_Realistic_EDA.csv",
@@ -292,19 +298,64 @@ def apply_plot_theme(fig, title=None):
     return fig
 
 
-def ask_phi3(messages, system_prompt=None):
-    if ollama is None:
-        raise RuntimeError("The Python 'ollama' package is not installed. Run: pip install ollama")
-    chat_messages = []
+def get_gemini_api_key():
+    """Read the key from Streamlit Secrets or an environment variable."""
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        return str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+    except Exception:
+        return ""
+
+
+def ask_ai(messages, system_prompt=None, provider="Gemini API"):
+    """Generate an answer using Gemini, local Ollama, or automatic selection."""
+    prompt_parts = []
     if system_prompt:
-        chat_messages.append({"role": "system", "content": system_prompt})
-    chat_messages.extend(messages)
-    response = ollama.chat(
-        model=MODEL_NAME,
-        messages=chat_messages,
-        options={"temperature": 0.2},
-    )
-    return response["message"]["content"]
+        prompt_parts.append("SYSTEM INSTRUCTIONS:\n" + system_prompt)
+    for message in messages:
+        role = message.get("role", "user").upper()
+        prompt_parts.append(f"{role}:\n{message.get('content', '')}")
+    full_prompt = "\n\n".join(prompt_parts)
+
+    def use_ollama():
+        if ollama is None:
+            raise RuntimeError("The 'ollama' package is missing. Add ollama to requirements.txt.")
+        response = ollama.chat(
+            model=MODEL_NAME,
+            messages=([{"role": "system", "content": system_prompt}] if system_prompt else []) + messages,
+            options={"temperature": 0.2},
+        )
+        return response["message"]["content"]
+
+    def use_gemini():
+        if genai is None:
+            raise RuntimeError("The google-genai package is missing. Add google-genai to requirements.txt.")
+        api_key = get_gemini_api_key()
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY is not configured in Streamlit Cloud → Settings → Secrets.")
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=full_prompt)
+        if not response.text:
+            raise RuntimeError("Gemini returned an empty response.")
+        return response.text
+
+    if provider == "Ollama Phi-3 Mini":
+        return use_ollama()
+    if provider == "Gemini API":
+        return use_gemini()
+
+    # Auto: prefer Gemini when a cloud key is configured; otherwise try local Ollama.
+    if get_gemini_api_key():
+        try:
+            return use_gemini()
+        except Exception:
+            return use_ollama()
+    try:
+        return use_ollama()
+    except Exception:
+        return use_gemini()
 
 
 def make_report(data, source_name):
@@ -369,9 +420,9 @@ with st.sidebar:
         label_visibility="visible",
     )
     st.markdown("---")
-    st.caption("LOCAL MODEL · OLLAMA")
-    st.markdown(f"**Model:** `{MODEL_NAME}`")
-    st.caption("Your CSV and prompts are processed by this local app and local Ollama service.")
+    st.caption("AI PROVIDERS")
+    st.markdown(f"**Local model:** `{MODEL_NAME}` · **Cloud model:** Gemini")
+    st.caption("Ollama runs on the computer hosting the app. For the deployed website, choose Gemini and configure GEMINI_API_KEY in Streamlit Secrets.")
 
 
 # ---------- Load dataset ----------
@@ -445,12 +496,12 @@ st.markdown(
     <div class="hero">
       <div class="eyebrow">STUDENT FINANCIAL INTELLIGENCE · EDA + SLM</div>
       <div class="hero-title">See the patterns.<br><span style="color:#6ee7b7">Make smarter money moves.</span></div>
-      <div class="hero-copy">Explore real student UPI behaviour, understand spending and savings patterns, and ask Phi-3 Mini for data-grounded financial guidance.</div>
+      <div class="hero-copy">Explore real student UPI behaviour, understand spending and savings patterns, and ask Gemini or local Phi-3 Mini for data-grounded financial guidance.</div>
       <div style="margin-top:17px">
         <span class="pill">● Dataset connected</span>
         <span class="pill">Pandas analytics</span>
         <span class="pill">Plotly visuals</span>
-        <span class="pill">Ollama · Phi-3 Mini</span>
+        <span class="pill">Gemini API + Ollama</span>
       </div>
     </div>
     """,
@@ -614,7 +665,17 @@ elif page == "Student Profile":
 # ---------- AI Financial Advisor ----------
 elif page == "AI Financial Advisor":
     st.subheader("AI financial advisor")
-    st.write("Ask Phi-3 Mini about a selected student's financial patterns. Responses are educational suggestions, not professional financial advice.")
+    st.write("Ask Gemini or local Phi-3 Mini about a selected student's financial patterns. Responses are educational suggestions, not professional financial advice.")
+    ai_provider = st.radio(
+        "AI provider",
+        ["Gemini API", "Ollama Phi-3 Mini", "Auto (Ollama → Gemini)"],
+        horizontal=True,
+        index=0,
+        key="ai_provider",
+        help="Use Gemini for the deployed Streamlit website. Ollama works only where the local Ollama service is running.",
+    )
+    if ai_provider == "Gemini API" and not get_gemini_api_key():
+        st.warning("Gemini API key not found. Add GEMINI_API_KEY under Streamlit Cloud → Settings → Secrets.")
     ids = filtered["Student_ID"].astype(str).tolist()
     selected_id = st.selectbox("Student context", ids, key="ai_student")
     student = filtered.loc[filtered["Student_ID"].astype(str) == selected_id].iloc[0]
@@ -631,7 +692,7 @@ elif page == "AI Financial Advisor":
         "impulse_buying_score_1_to_5": None if "Impulse_Buying_Score" not in student.index or pd.isna(student["Impulse_Buying_Score"]) else float(student["Impulse_Buying_Score"]),
         "financial_category": str(student["Financial_Category"]),
     }
-    with st.expander("View the exact data sent to Phi-3 Mini"):
+    with st.expander("View the exact student data used as AI context"):
         st.json(context)
 
     if "chat_messages" not in st.session_state:
@@ -662,18 +723,20 @@ elif page == "AI Financial Advisor":
             f"Student question: {prompt_text}"
         )
         with st.chat_message("assistant"):
-            with st.spinner("Phi-3 Mini is thinking…"):
+            with st.spinner(f"{ai_provider} is thinking…"):
                 try:
-                    answer = ask_phi3(
+                    answer = ask_ai(
                         [{"role": "user", "content": user_message}],
                         system_prompt=system,
+                        provider=ai_provider,
                     )
                     st.markdown(answer)
                     st.session_state.chat_messages.append({"role": "assistant", "content": answer})
                 except Exception as exc:
                     answer = (
-                        f"Could not reach Ollama model `{MODEL_NAME}`. "
-                        "Check that Ollama is running and that `ollama list` shows `phi3`.\n\n"
+                        f"Could not get a response from **{ai_provider}**.\n\n"
+                        "For the deployed website, select **Gemini API** and check that `GEMINI_API_KEY` is set in Streamlit Secrets. "
+                        "For **Ollama Phi-3 Mini**, the Ollama service and `phi3` model must be running on the same machine as this app.\n\n"
                         f"Technical detail: `{exc}`"
                     )
                     st.error(answer)
@@ -717,6 +780,6 @@ elif page == "Download Reports":
 # Footer
 st.markdown("---")
 st.markdown(
-    '<div style="text-align:center;color:#6f9485;font-size:.78rem;padding:8px 0">UPI INSIGHT · BUILT WITH STREAMLIT, PANDAS, PLOTLY & OLLAMA · LOCAL PROTOTYPE</div>',
+    '<div style="text-align:center;color:#6f9485;font-size:.78rem;padding:8px 0">UPI INSIGHT · BUILT WITH STREAMLIT, PANDAS, PLOTLY, GEMINI & OLLAMA</div>',
     unsafe_allow_html=True,
 )
