@@ -9,6 +9,12 @@ def generate_financial_advice(
     cashback,
     impulse_score
 ):
+
+from google import genai
+
+client = genai.Client(
+    api_key=os.environ["GEMINI_API_KEY"]
+)
     prompt = f"""
 You are an AI financial advisor for college students.
 Analyze the following student details using simple English.
